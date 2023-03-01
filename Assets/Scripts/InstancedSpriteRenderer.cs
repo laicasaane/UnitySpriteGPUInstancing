@@ -2,77 +2,80 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-[RequireComponent(typeof(SpriteRenderer))]
 public class InstancedSpriteRenderer : MonoBehaviour
 {
     public Mesh quadMesh;
 
     public Vector4 pivot;
     public Vector4 newUV;
-    public bool isLightProbeEnabled;
 
-    private static Dictionary<Texture2D, int> textureIndexes = new Dictionary<Texture2D, int>();
-    private static Texture2DArray spriteTextures;
-    private static int spriteTextureCount = 0;
+    private static Dictionary<Texture2D, int> s_textureIndexes = new();
+    private static Texture2DArray s_spriteTextures;
+    private static Material s_spriteMaterial;
+    private static int s_spriteTextureCount = 0;
 
     private MaterialPropertyBlock props;
-    int textureID = 0;
+    private int textureID = 0;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void Init()
+    {
+        s_textureIndexes = new();
+        s_spriteTextures = null;
+        s_spriteMaterial = null;
+        s_spriteTextureCount = 0;
+    }
 
     private void Start()
     {
-        SpriteRenderer spriteRenderer = GetComponent<SpriteRenderer>();
+        var spriteRenderer = GetComponent<SpriteRenderer>();
+
+        if (spriteRenderer == false)
+            return;
 
         // Sprite instancing implementation
         if (spriteRenderer.sprite.texture.width != 512) // Texture2DArray needs same size and format
             return;
 
         Texture2D tex = spriteRenderer.sprite.texture;
-        if (spriteTextures == null)
+
+        if (s_spriteTextures == false)
         {
-            spriteTextures = new Texture2DArray(tex.width, tex.height, 128, tex.format, false);
-            spriteTextureCount = 0;
+            s_spriteTextures = new Texture2DArray(tex.width, tex.height, 128, tex.format, false);
+            s_spriteTextureCount = 0;
         }
 
-        if (props == null)
+        props ??= new MaterialPropertyBlock();
+
+        if (s_textureIndexes.TryGetValue(tex, out textureID) == false)
         {
-            props = new MaterialPropertyBlock();
+            Graphics.CopyTexture(tex, 0, 0, s_spriteTextures, s_spriteTextureCount, 0);
+            textureID = s_spriteTextureCount;
+            s_textureIndexes[tex] = textureID;
+            s_spriteTextureCount++;
         }
-
-        if (!textureIndexes.ContainsKey(tex))
-        {
-            Graphics.CopyTexture(tex, 0, 0, spriteTextures, spriteTextureCount, 0);
-            textureID = spriteTextureCount;
-            textureIndexes[tex] = textureID;
-            spriteTextureCount++;
-        }
-        else
-        {
-            textureID = textureIndexes[tex];
-        }
-
-        spriteRenderer.enabled = false;
-
-        GameObject temp = new GameObject(gameObject.name + "_mesh");
-        temp.layer = gameObject.layer;
-        temp.transform.SetParent(transform);
-        temp.transform.localPosition = Vector3.zero;
-        temp.transform.localRotation = Quaternion.identity;
-        temp.transform.localScale = Vector3.one;
-
-        MeshFilter meshFilter = temp.AddComponent<MeshFilter>();
-        MeshRenderer meshRenderer = temp.AddComponent<MeshRenderer>();
-        meshRenderer.enabled = true;
-        Material mat = Resources.Load(isLightProbeEnabled ? "InstancedSpriteLightProbe" : "InstancedSprite", typeof(Material)) as Material;
-        // spriteRenderer.sharedMaterial = mat;
-        meshRenderer.sharedMaterial = mat;
-        // meshRenderer.sharedMaterial = spriteRenderer.sharedMaterial;
-        // meshRenderer.material.SetTexture("_MainTex", spriteRenderer.sprite.texture);
-
-        meshRenderer.sharedMaterial.SetTexture("_Textures", spriteTextures);
-
-        meshFilter.sharedMesh = quadMesh;
 
         Sprite sprite = spriteRenderer.sprite;
+
+        DestroyImmediate(spriteRenderer);
+
+        var go = this.gameObject;
+
+        MeshFilter meshFilter = go.AddComponent<MeshFilter>();
+        MeshRenderer meshRenderer = go.AddComponent<MeshRenderer>();
+        meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
+        meshRenderer.lightProbeUsage = LightProbeUsage.Off;
+        meshRenderer.enabled = true;
+
+        if (s_spriteMaterial == false)
+        {
+            var materialPrefab = Resources.Load<Material>("InstancedSprite");
+            s_spriteMaterial = new Material(materialPrefab);
+            s_spriteMaterial.SetTexture("_Textures", s_spriteTextures);
+        }
+
+        meshRenderer.sharedMaterial = s_spriteMaterial;
+        meshFilter.sharedMesh = quadMesh;
 
         // Calculate vertices translate and scale value
         pivot.x = sprite.rect.width / sprite.pixelsPerUnit;
@@ -90,16 +93,15 @@ public class InstancedSpriteRenderer : MonoBehaviour
         positions[0] = transform.position;
         var lightProbes = new UnityEngine.Rendering.SphericalHarmonicsL2[1];
         var occlusionProbes = new Vector4[1];
+
         LightProbes.CalculateInterpolatedLightAndOcclusionProbes(positions, lightProbes, occlusionProbes);
-        // lightProbes[0][0, 0] = positions[0].x;
 
         // Set MaterialPropertyBlock
-        // meshRenderer.GetPropertyBlock(props);
         props.CopySHCoefficientArraysFrom(lightProbes);
         props.CopyProbeOcclusionArrayFrom(occlusionProbes);
         meshRenderer.lightProbeUsage = LightProbeUsage.CustomProvided;
         meshRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-        // meshRenderer.lightProbeUsage = LightProbeUsage.BlendProbes;
+
         props.SetFloat("_TextureIndex", textureID);
         props.SetVector("_Pivot", pivot);
         props.SetVector("_NewUV", newUV);
